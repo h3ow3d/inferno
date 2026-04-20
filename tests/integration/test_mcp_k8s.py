@@ -4,10 +4,10 @@ Expects the server to be reachable at MCP_BASE_URL (default: http://localhost:80
 The CI workflow handles starting the server (via kubectl port-forward) before
 running these tests.
 
-All MCP POST requests include ``Accept: application/json`` to instruct the
-StreamableHTTPServerTransport to return a plain JSON response instead of
-opening a server-sent-events (SSE) stream, which would keep the connection
-open indefinitely.
+All MCP POST requests include ``Accept: application/json, text/event-stream``
+as required by the StreamableHTTPServerTransport (it rejects requests that do
+not declare willingness to accept both content types).  Responses arrive as
+plain JSON when the server decides a single round-trip is sufficient.
 """
 
 import json
@@ -51,7 +51,7 @@ def test_mcp_initialize():
     resp = requests.post(
         f"{BASE_URL}/mcp",
         json=payload,
-        headers={"Accept": "application/json"},
+        headers={"Accept": "application/json, text/event-stream"},
         timeout=TIMEOUT,
     )
     assert resp.status_code == 200, f"Unexpected status: {resp.status_code}\n{resp.text}"
@@ -76,7 +76,7 @@ def test_list_namespaces_contains_default():
     resp = requests.post(
         f"{BASE_URL}/mcp",
         json=payload,
-        headers={"Accept": "application/json"},
+        headers={"Accept": "application/json, text/event-stream"},
         timeout=TIMEOUT,
     )
     assert resp.status_code == 200, f"Unexpected status: {resp.status_code}\n{resp.text}"
