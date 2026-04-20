@@ -110,7 +110,15 @@ npm run dev
 
 ## Container image
 
-The image is published to GitHub Container Registry on every push to `main` and on version tags:
+Two workflows publish images to GitHub Container Registry:
+
+**`ci-mcp-k8s.yml`** — runs on every branch push, deploys to a temporary kind cluster, runs integration tests, and only pushes after tests pass:
+
+| Git event | Image tag |
+|-----------|-----------|
+| Push to any branch | `:<branch-name>` (slashes become dashes, e.g. `feature-my-feat`) |
+
+**`publish-mcp-k8s.yml`** — runs on pushes to `main` and version tags, builds multi-arch and publishes:
 
 | Git event | Image tags |
 |-----------|-----------|

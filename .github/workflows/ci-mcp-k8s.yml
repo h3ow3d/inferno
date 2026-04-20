@@ -1,0 +1,158 @@
+name: CI – kind integration test + branch tag
+
+on:
+  push:
+    branches:
+      - '**'
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  test-and-push:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ── Docker setup ─────────────────────────────────────────────────────────
+      # No QEMU needed here – we build linux/amd64 only for the local kind test.
+      # The final push at the end rebuilds multi-arch from cache.
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # ── Derive branch-safe image tag ─────────────────────────────────────────
+      # type=ref,event=branch turns e.g. "feature/my-feat" → "feature-my-feat".
+      - name: Extract Docker metadata (branch tag)
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/h3ow3d/mcp-k8s
+          tags: |
+            type=ref,event=branch
+
+      # ── Build + load locally (single arch, no push) ──────────────────────────
+      - name: Build image and load into Docker daemon
+        uses: docker/build-push-action@v6
+        with:
+          context: mcp-k8s
+          platforms: linux/amd64
+          load: true
+          tags: ${{ steps.meta.outputs.tags }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # ── kind cluster ─────────────────────────────────────────────────────────
+      - name: Create kind cluster
+        uses: helm/kind-action@v1
+        with:
+          cluster_name: inferno-ci
+
+      # Load the locally built image into the kind nodes so the deployment can
+      # use imagePullPolicy: Never and never try to pull from GHCR.
+      - name: Load image into kind
+        run: |
+          IMAGE=$(echo "${{ steps.meta.outputs.tags }}" | head -n1)
+          kind load docker-image "$IMAGE" --name inferno-ci
+
+      # ── Deploy ───────────────────────────────────────────────────────────────
+      - name: Deploy manifests to kind
+        run: |
+          IMAGE=$(echo "${{ steps.meta.outputs.tags }}" | head -n1)
+
+          # Apply base manifests (namespace, SA, RBAC, Deployment, Service)
+          kubectl apply -k k8s/mcp-k8s
+          kubectl -n inferno get serviceaccount mcp-k8s
+          kubectl -n inferno get deployment mcp-k8s
+          kubectl -n inferno get service mcp-k8s
+
+          # Switch the deployment to the image we just loaded and stop it
+          # trying to pull from an external registry.
+          kubectl -n inferno set image deployment/mcp-k8s mcp-k8s="$IMAGE"
+          kubectl -n inferno patch deployment mcp-k8s \
+            --type=json \
+            -p '[{"op":"replace","path":"/spec/template/spec/containers/0/imagePullPolicy","value":"Never"}]'
+
+      - name: Wait for rollout
+        run: kubectl -n inferno rollout status deployment/mcp-k8s --timeout=120s
+
+      # ── Integration tests ────────────────────────────────────────────────────
+      - name: Integration tests
+        run: |
+          # Start a port-forward and wait until the health endpoint responds.
+          kubectl -n inferno port-forward svc/mcp-k8s 8080:8080 &
+          PF_PID=$!
+          echo "port-forward PID: $PF_PID"
+
+          echo "Waiting for server to be reachable..."
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:8080/health >/dev/null 2>&1; then
+              echo "Server is up (attempt $i)"
+              break
+            fi
+            sleep 1
+          done
+
+          # ── Test 1: health endpoint ─────────────────────────────────────────
+          echo "--- Test 1: health check ---"
+          curl -sf http://localhost:8080/health | tee /tmp/health.json
+          jq -e '.status == "ok"' /tmp/health.json
+          echo "✓ health check passed"
+
+          # ── Test 2: MCP initialize ──────────────────────────────────────────
+          echo "--- Test 2: MCP initialize ---"
+          curl -sf -X POST http://localhost:8080/mcp \
+            -H 'Content-Type: application/json' \
+            -d '{
+              "jsonrpc": "2.0",
+              "id": 1,
+              "method": "initialize",
+              "params": {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {},
+                "clientInfo": { "name": "ci-test", "version": "0.0.1" }
+              }
+            }' | tee /tmp/init.json
+          jq -e '.result.protocolVersion' /tmp/init.json
+          echo "✓ MCP initialize passed"
+
+          # ── Test 3: list_namespaces tool call ───────────────────────────────
+          echo "--- Test 3: list_namespaces ---"
+          curl -sf -X POST http://localhost:8080/mcp \
+            -H 'Content-Type: application/json' \
+            -d '{
+              "jsonrpc": "2.0",
+              "id": 2,
+              "method": "tools/call",
+              "params": { "name": "list_namespaces", "arguments": {} }
+            }' | tee /tmp/ns.json
+          # The tool returns a JSON string inside content[0].text – parse it
+          # and confirm the kind cluster's "default" namespace is present.
+          jq -e '.result.content[0].text | fromjson | index("default") != null' /tmp/ns.json
+          echo "✓ list_namespaces passed"
+
+          kill $PF_PID
+
+      # ── Push to GHCR (only after tests pass) ─────────────────────────────────
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up QEMU (for multi-arch push)
+        uses: docker/setup-qemu-action@v3
+
+      - name: Push branch-tagged image (multi-arch)
+        uses: docker/build-push-action@v6
+        with:
+          context: mcp-k8s
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
