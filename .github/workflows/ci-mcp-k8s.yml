@@ -79,6 +79,9 @@ jobs:
         run: kubectl -n inferno rollout status deployment/mcp-k8s --timeout=120s
 
       # ── Integration tests ────────────────────────────────────────────────────
+      - name: Install Python test dependencies
+        run: pip install -r tests/integration/requirements.txt
+
       - name: Integration tests
         run: |
           # Start a port-forward and wait until the health endpoint responds.
@@ -95,40 +98,11 @@ jobs:
             sleep 1
           done
 
-          # ── Test 1: health endpoint ─────────────────────────────────────────
-          echo "--- Test 1: health check ---"
-          curl -sf http://localhost:8080/health | tee /tmp/health.json
-          jq -e '.status == "ok"' /tmp/health.json
-          echo "✓ health check passed"
-
-          # ── Test 2: MCP initialize ──────────────────────────────────────────
-          # Accept: application/json forces the StreamableHTTPServerTransport
-          # to return a plain JSON response instead of an SSE stream that would
-          # leave the connection open and cause curl to hang indefinitely.
-          echo "--- Test 2: MCP initialize ---"
-          curl -sf --max-time 10 -X POST http://localhost:8080/mcp \
-            -H 'Content-Type: application/json' \
-            -H 'Accept: application/json' \
-            -o /tmp/init.json \
-            -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"ci-test","version":"0.0.1"}}}'
-          cat /tmp/init.json
-          jq -e '.result.protocolVersion' /tmp/init.json
-          echo "✓ MCP initialize passed"
-
-          # ── Test 3: list_namespaces tool call ───────────────────────────────
-          echo "--- Test 3: list_namespaces ---"
-          curl -sf --max-time 10 -X POST http://localhost:8080/mcp \
-            -H 'Content-Type: application/json' \
-            -H 'Accept: application/json' \
-            -o /tmp/ns.json \
-            -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"list_namespaces","arguments":{}}}'
-          cat /tmp/ns.json
-          # The tool returns a JSON string inside content[0].text – parse it
-          # and confirm the kind cluster's "default" namespace is present.
-          jq -e '.result.content[0].text | fromjson | index("default") != null' /tmp/ns.json
-          echo "✓ list_namespaces passed"
+          pytest tests/integration/ -v
+          TEST_EXIT=$?
 
           kill $PF_PID
+          exit $TEST_EXIT
 
       # ── Push to GHCR (only after tests pass) ─────────────────────────────────
       - name: Log in to GitHub Container Registry
