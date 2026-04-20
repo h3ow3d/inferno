@@ -1,0 +1,67 @@
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: inferno
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: mcp-k8s
+  namespace: inferno
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: mcp-k8s-readonly
+rules:
+  # Core workload and cluster resources (read-only; secrets intentionally excluded)
+  - apiGroups: [""]
+    resources:
+      - pods
+      - services
+      - endpoints
+      - configmaps
+      - namespaces
+      - nodes
+    verbs: ["get", "list", "watch"]
+
+  # Pod logs (read)
+  - apiGroups: [""]
+    resources:
+      - pods/log
+    verbs: ["get"]
+
+  # Events (core API group)
+  - apiGroups: [""]
+    resources:
+      - events
+    verbs: ["get", "list", "watch"]
+
+  # Events (events.k8s.io API group — used by newer clusters)
+  - apiGroups: ["events.k8s.io"]
+    resources:
+      - events
+    verbs: ["get", "list", "watch"]
+
+  # Workload controllers (apps)
+  - apiGroups: ["apps"]
+    resources:
+      - deployments
+      - replicasets
+      - statefulsets
+      - daemonsets
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: mcp-k8s-readonly
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: mcp-k8s-readonly
+subjects:
+  - kind: ServiceAccount
+    name: mcp-k8s
+    namespace: inferno
