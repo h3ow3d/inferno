@@ -6,18 +6,38 @@ running these tests.
 
 All MCP POST requests include ``Accept: application/json, text/event-stream``
 as required by the StreamableHTTPServerTransport (it rejects requests that do
-not declare willingness to accept both content types).  Responses arrive as
-plain JSON when the server decides a single round-trip is sufficient.
+not declare willingness to accept both content types).  Responses may arrive as
+Server-Sent Events (SSE) with ``Content-Type: text/event-stream``, so we parse
+the ``data:`` lines to extract the JSON payload.
 """
 
 import json
 import os
 
-import pytest
 import requests
 
 BASE_URL = os.environ.get("MCP_BASE_URL", "http://localhost:8080").rstrip("/")
 TIMEOUT = 10  # seconds
+
+
+def parse_mcp_response(resp: requests.Response) -> dict:
+    """Parse an MCP response that may be plain JSON or SSE (text/event-stream).
+
+    The StreamableHTTPServerTransport always wraps responses in SSE format::
+
+        event: message
+        data: {"jsonrpc": "2.0", ...}
+
+    This helper extracts the first ``data:`` payload and returns it as a dict.
+    Falls back to ``resp.json()`` when the response is plain JSON.
+    """
+    content_type = resp.headers.get("Content-Type", "")
+    if "text/event-stream" in content_type or resp.text.startswith("event:"):
+        for line in resp.text.splitlines():
+            if line.startswith("data:"):
+                return json.loads(line[len("data:"):].strip())
+        raise ValueError(f"No data: line found in SSE response: {resp.text!r}")
+    return resp.json()
 
 
 # ── Test 1: health endpoint ──────────────────────────────────────────────────
@@ -56,7 +76,7 @@ def test_mcp_initialize():
     )
     assert resp.status_code == 200, f"Unexpected status: {resp.status_code}\n{resp.text}"
 
-    body = resp.json()
+    body = parse_mcp_response(resp)
     assert "result" in body, f"Missing result in response: {body}"
     assert "protocolVersion" in body["result"], (
         f"Missing protocolVersion in result: {body['result']}"
@@ -81,7 +101,7 @@ def test_list_namespaces_contains_default():
     )
     assert resp.status_code == 200, f"Unexpected status: {resp.status_code}\n{resp.text}"
 
-    body = resp.json()
+    body = parse_mcp_response(resp)
     assert "result" in body, f"Missing result in response: {body}"
 
     content = body["result"].get("content", [])
