@@ -1,0 +1,31 @@
+services:
+  llm:
+    image: ghcr.io/ggml-org/llama.cpp:server
+    command: >
+      -m /models/Phi-3-mini-4k-instruct-q4.gguf
+      --host 0.0.0.0
+      --port 8000
+      --threads 4
+      --ctx-size 2048
+    volumes:
+      - ./models:/models:ro
+    networks:
+      - internal_net
+    restart: unless-stopped
+    tmpfs:
+      - /tmp
+
+  client:
+    image: curlimages/curl:latest
+    stdin_open: true
+    tty: true
+    command: sh
+    networks:
+      - internal_net
+    depends_on:
+      - llm
+
+networks:
+  internal_net:
+    driver: bridge
+    internal: true
